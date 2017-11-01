@@ -22,16 +22,23 @@ package org.sonar.java.bytecode.se;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import javax.annotation.CheckForNull;
 import javax.annotation.Nullable;
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ClassVisitor;
+import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.util.Printer;
 import org.sonar.api.utils.log.Logger;
@@ -39,6 +46,9 @@ import org.sonar.api.utils.log.Loggers;
 import org.sonar.java.bytecode.cfg.BytecodeCFGBuilder;
 import org.sonar.java.bytecode.cfg.Instruction;
 import org.sonar.java.bytecode.loader.SquidClassLoader;
+import org.sonar.java.resolve.Convert;
+import org.sonar.java.resolve.JavaSymbol;
+import org.sonar.java.resolve.JavaType;
 import org.sonar.java.resolve.SemanticModel;
 import org.sonar.java.resolve.Symbols;
 import org.sonar.java.se.ExplodedGraph;
@@ -56,6 +66,7 @@ import org.sonar.java.se.symbolicvalues.RelationalSymbolicValue;
 import org.sonar.java.se.symbolicvalues.SymbolicValue;
 import org.sonar.java.se.xproc.BehaviorCache;
 import org.sonar.java.se.xproc.MethodBehavior;
+import org.sonar.plugins.java.api.semantic.Symbol;
 import org.sonar.plugins.java.api.semantic.Type;
 
 import static org.objectweb.asm.Opcodes.AALOAD;
@@ -224,6 +235,7 @@ public class BytecodeEGWalker {
 
   @VisibleForTesting
   ExplodedGraph explodedGraph;
+  private SquidClassLoader classLoader;
 
   /**
    * Because some instructions manipulate stack differently depending on the type of the value, we need this constraint to know category of the value
@@ -281,6 +293,7 @@ public class BytecodeEGWalker {
       // should not generate any method behavior
       return null;
     }
+    this.classLoader = classLoader;
     methodBehavior = behaviorCache.methodBehaviorForSymbol(signature);
     if (!methodBehavior.isVisited()) {
       try {
@@ -308,7 +321,10 @@ public class BytecodeEGWalker {
     programState = ProgramState.EMPTY_STATE;
     steps = 0;
     BytecodeCFGBuilder.BytecodeCFG bytecodeCFG = BytecodeCFGBuilder.buildCFG(signature, classLoader);
-    if (bytecodeCFG == null) {
+    if (bytecodeCFG != null) {
+      methodBehavior.setThrownDeclaration(bytecodeCFG.getThrowsDeclaration());
+    }
+    if (bytecodeCFG == null || !bytecodeCFG.isMethodVisited()) {
       return;
     }
     methodBehavior.setVarArgs(bytecodeCFG.isVarArgs());
@@ -768,6 +784,13 @@ public class BytecodeEGWalker {
       return !methodInvokedBehavior.yields().isEmpty();
     }
     programState = pop.state;
+    if (methodInvokedBehavior != null) {
+      methodInvokedBehavior.getThrownDeclaration().forEach(exception -> {
+        Type exceptionType = semanticModel.getClassType(exception);
+        ProgramState ps = programState.stackValue(constraintManager.createExceptionalSymbolicValue(exceptionType));
+        enqueueExceptionHandlers(exceptionType, ps);
+      });
+    }
     if (instruction.hasReturnValue()) {
       programState = programState.stackValue(returnSV);
       programState = setDoubleOrLong(returnSV, instruction.isLongOrDoubleValue());

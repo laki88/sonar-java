@@ -108,6 +108,7 @@ public class BytecodeEGWalkerExecuteTest {
     List<File> files = new ArrayList<>(FileUtils.listFiles(new File("target/test-jars"), new String[]{"jar", "zip"}, true));
     files.add(new File("target/classes"));
     files.add(new File("target/test-classes"));
+    files.add(new File("C:\\projects\\sonar-java\\its\\sources\\commons-beanutils\\target\\classes"));
     squidClassLoader = new SquidClassLoader(files);
     File file = new File("src/test/java/org/sonar/java/bytecode/se/BytecodeEGWalkerExecuteTest.java");
     CompilationUnitTree tree = (CompilationUnitTree) JavaParser.createParser().parse(file);
@@ -1175,6 +1176,13 @@ public class BytecodeEGWalkerExecuteTest {
     assertThat(resultConstraint.get(ObjectConstraint.class)).isEqualTo(ObjectConstraint.NOT_NULL);
     TypedConstraint typeConstraint = (TypedConstraint) resultConstraint.get(TypedConstraint.class);
     assertThat(typeConstraint.type.equals("java.lang.String")).isTrue();
+  }
+
+  @Test
+  public void test_sig() {
+    MethodBehavior mb = walker.getMethodBehavior("org.apache.commons.beanutils.MethodUtils#getMatchingAccessibleMethod(Ljava/lang/Class;Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;", squidClassLoader);
+    System.out.println(mb.yields());
+    System.out.println(mb.isComplete());
   }
 
   /**

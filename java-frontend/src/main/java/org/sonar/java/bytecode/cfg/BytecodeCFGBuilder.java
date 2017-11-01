@@ -22,6 +22,7 @@ package org.sonar.java.bytecode.cfg;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Throwables;
 import com.google.common.io.ByteStreams;
+import java.util.Arrays;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.Handle;
@@ -64,9 +65,8 @@ public class BytecodeCFGBuilder {
   }
 
   @CheckForNull
-  public static BytecodeCFG buildCFG(String signature, SquidClassLoader classLoader) {
-    String className = signature.substring(0, signature.indexOf('#'));
-    try(InputStream is = classLoader.getResourceAsStream(Convert.bytecodeName(className) + ".class")) {
+  private static byte[] getClassBytes(String className, SquidClassLoader classLoader) {
+    try (InputStream is = classLoader.getResourceAsStream(Convert.bytecodeName(className) + ".class")) {
       if (is == null) {
         LOG.debug(".class not found for {}", className);
         return null;
@@ -76,10 +76,20 @@ public class BytecodeCFGBuilder {
       if (Java9Support.isJava9Class(bytes)) {
         Java9Support.setJava8MajorVersion(bytes);
       }
-      return buildCFG(signature, bytes);
+      return bytes;
     } catch (IOException e) {
       throw Throwables.propagate(e);
     }
+  }
+
+  @CheckForNull
+  public static BytecodeCFG buildCFG(String signature, SquidClassLoader classLoader) {
+    String className = signature.substring(0, signature.indexOf('#'));
+    byte[] classBytes = getClassBytes(className, classLoader);
+    if (classBytes == null) {
+      return null;
+    }
+    return buildCFG(signature, classBytes);
   }
 
   @VisibleForTesting
@@ -95,6 +105,8 @@ public class BytecodeCFGBuilder {
     List<Block> blocks;
     boolean isStaticMethod;
     boolean isVarArgs;
+    List<String> throwsDeclaration;
+    boolean methodVisited;
 
     BytecodeCFG() {
       blocks = new ArrayList<>();
@@ -114,6 +126,14 @@ public class BytecodeCFGBuilder {
 
     public boolean isVarArgs() {
       return isVarArgs;
+    }
+
+    public List<String> getThrowsDeclaration() {
+      return throwsDeclaration;
+    }
+
+    public boolean isMethodVisited() {
+      return methodVisited;
     }
 
     public List<Block> blocks() {
@@ -265,14 +285,22 @@ public class BytecodeCFGBuilder {
     public MethodVisitor visitMethod(int access, String name, String desc, String signature, String[] exceptions) {
       if (name.equals(methodSignature.substring(methodSignature.indexOf('#') + 1, methodSignature.indexOf('(')))
         && desc.equals(methodSignature.substring(methodSignature.indexOf('(')))) {
+        methodVisitor.initCFG(access, convertExceptions(exceptions));
         if (isOverridableOrNativeMethod(access)) {
           // avoid computing CFG when the method behavior won't be used
           return null;
         }
-        methodVisitor.initCFG(access);
+        methodVisitor.cfg.methodVisited = true;
         return new JSRInlinerAdapter(methodVisitor, access, name, desc, signature, exceptions);
       }
       return null;
+    }
+
+    private static List<String> convertExceptions(@Nullable String[] exceptions) {
+      return exceptions == null ? Collections.emptyList() : Arrays.stream(exceptions)
+          .map(Type::getObjectType)
+          .map(Type::getClassName)
+          .collect(Collectors.toList());
     }
 
     private boolean isOverridableOrNativeMethod(int methodFlags) {
@@ -295,12 +323,13 @@ public class BytecodeCFGBuilder {
       super(Opcodes.ASM5);
     }
 
-    private void initCFG(int access) {
+    private void initCFG(int access, List<String> exceptions) {
       cfg = new BytecodeCFG();
       currentBlock = new Block(cfg);
       cfg.blocks.add(currentBlock);
       cfg.isStaticMethod = Flags.isFlagged(access, Flags.STATIC);
       cfg.isVarArgs = Flags.isFlagged(access, Flags.VARARGS);
+      cfg.throwsDeclaration = exceptions;
     }
 
     @Override
